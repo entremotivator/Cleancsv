@@ -50,10 +50,11 @@ with st.sidebar:
     
     # Advanced cleaning options
     st.subheader("🔧 Advanced Options")
-    preserve_formatting = st.checkbox("📝 Preserve basic formatting (bold, italic)", value=False, help="Keep <b>, <i>, <strong>, <em> tags")
+    preserve_formatting = st.checkbox("📝 Preserve basic formatting (bold, italic)", value=False, help="Keep <b>, <i>, <strong>, <em> tags as markdown")
     normalize_whitespace = st.checkbox("📏 Normalize whitespace", value=True, help="Remove extra spaces and line breaks")
     remove_urls = st.checkbox("🔗 Remove URLs", value=False, help="Strip out HTTP/HTTPS links")
     remove_email = st.checkbox("📧 Remove email addresses", value=False, help="Strip out email addresses")
+    aggressive_clean = st.checkbox("🧽 Aggressive cleaning", value=False, help="Remove WordPress comments, shortcodes, and CSS artifacts")
     
     # Encoding options
     st.subheader("📄 File Options")
@@ -75,10 +76,19 @@ def load_csv_file(file_content: bytes, encoding: str = "utf-8", delimiter: str =
 
 @st.cache_data(show_spinner=False)
 def decode_html_entities(text: str) -> str:
-    """Decode HTML entities in text."""
+    """Decode HTML entities in text with multiple passes for nested encoding."""
     if pd.isna(text) or text == "":
         return ""
-    return html.unescape(str(text))
+    
+    text = str(text)
+    # Multiple passes to handle nested HTML encoding
+    for _ in range(3):  # Usually 2-3 passes are enough
+        original_text = text
+        text = html.unescape(text)
+        if text == original_text:  # No more changes
+            break
+    
+    return text
 
 @st.cache_data(show_spinner=False)
 def remove_html_tags(text: str, preserve_formatting: bool = False) -> str:
@@ -89,14 +99,19 @@ def remove_html_tags(text: str, preserve_formatting: bool = False) -> str:
     text = str(text)
     
     if preserve_formatting:
-        # Replace formatting tags with markdown equivalents
-        text = re.sub(r'<strong>(.*?)</strong>', r'**\1**', text, flags=re.IGNORECASE | re.DOTALL)
-        text = re.sub(r'<b>(.*?)</b>', r'**\1**', text, flags=re.IGNORECASE | re.DOTALL)
-        text = re.sub(r'<em>(.*?)</em>', r'*\1*', text, flags=re.IGNORECASE | re.DOTALL)
-        text = re.sub(r'<i>(.*?)</i>', r'*\1*', text, flags=re.IGNORECASE | re.DOTALL)
+        # Replace formatting tags with markdown equivalents before removing
+        text = re.sub(r'<strong[^>]*>(.*?)</strong>', r'**\1**', text, flags=re.IGNORECASE | re.DOTALL)
+        text = re.sub(r'<b[^>]*>(.*?)</b>', r'**\1**', text, flags=re.IGNORECASE | re.DOTALL)
+        text = re.sub(r'<em[^>]*>(.*?)</em>', r'*\1*', text, flags=re.IGNORECASE | re.DOTALL)
+        text = re.sub(r'<i[^>]*>(.*?)</i>', r'*\1*', text, flags=re.IGNORECASE | re.DOTALL)
+        text = re.sub(r'<h[1-6][^>]*>(.*?)</h[1-6]>', r'**\1**', text, flags=re.IGNORECASE | re.DOTALL)
     
-    # Remove all HTML tags
+    # Remove all HTML tags (including those with attributes)
     text = re.sub(r'<[^>]*>', '', text)
+    
+    # Clean up any remaining HTML comments
+    text = re.sub(r'<!--.*?-->', '', text, flags=re.DOTALL)
+    
     return text
 
 @st.cache_data(show_spinner=False)
@@ -141,7 +156,7 @@ def clean_text_comprehensive(text: str, options: dict) -> str:
     
     cleaned_text = str(text)
     
-    # Apply cleaning operations in order
+    # Apply cleaning operations in optimal order
     if options.get('decode_html', True):
         cleaned_text = decode_html_entities(cleaned_text)
     
@@ -157,7 +172,43 @@ def clean_text_comprehensive(text: str, options: dict) -> str:
     if options.get('normalize_whitespace', True):
         cleaned_text = normalize_whitespace_func(cleaned_text)
     
+    # Final cleanup pass to remove any remaining artifacts
+    cleaned_text = clean_remaining_artifacts(cleaned_text)
+    
     return cleaned_text
+
+@st.cache_data(show_spinner=False)
+def clean_remaining_artifacts(text: str) -> str:
+    """Clean up any remaining HTML artifacts and formatting issues."""
+    if pd.isna(text) or text == "":
+        return ""
+    
+    text = str(text)
+    
+    # Remove WordPress comments and shortcodes
+    text = re.sub(r'<!-- wp:.*? -->', '', text)
+    text = re.sub(r'\[.*?\]', '', text)  # Remove shortcodes like [wp:paragraph]
+    
+    # Clean up common HTML entities that might be missed
+    text = re.sub(r'&nbsp;', ' ', text)
+    text = re.sub(r'&amp;', '&', text)
+    text = re.sub(r'&lt;', '<', text)
+    text = re.sub(r'&gt;', '>', text)
+    text = re.sub(r'&quot;', '"', text)
+    text = re.sub(r'&#039;', "'", text)
+    text = re.sub(r'&apos;', "'", text)
+    
+    # Remove CSS class names and inline styles that might remain
+    text = re.sub(r'class="[^"]*"', '', text)
+    text = re.sub(r'style="[^"]*"', '', text)
+    text = re.sub(r'target="_blank"', '', text)
+    text = re.sub(r'rel="[^"]*"', '', text)
+    
+    # Clean up multiple spaces and line breaks
+    text = re.sub(r'\s+', ' ', text)
+    text = text.strip()
+    
+    return text
 
 def get_cleaning_stats(original_series: pd.Series, cleaned_series: pd.Series) -> dict:
     """Calculate statistics about the cleaning process."""
@@ -251,7 +302,8 @@ if uploaded_file is not None:
                 'preserve_formatting': preserve_formatting,
                 'normalize_whitespace': normalize_whitespace,
                 'remove_urls': remove_urls,
-                'remove_email': remove_email
+                'remove_email': remove_email,
+                'aggressive_clean': aggressive_clean
             }
             
             # Progress tracking
