@@ -1,53 +1,49 @@
 import streamlit as st
 import pandas as pd
-from streamlit_aggrid import AgGrid, GridOptionsBuilder
-import io
+from io import StringIO
 
-st.set_page_config(page_title="Large CSV Viewer", layout="wide")
+st.set_page_config(page_title="CSV Viewer", layout="wide")
 
-st.title("📊 Large CSV File Viewer")
+st.title("📊 Large CSV Viewer & Filter (No AgGrid)")
 
-# --- Upload CSV File ---
-uploaded_file = st.file_uploader("Upload a CSV file", type=["csv"])
-
+# Upload CSV
+uploaded_file = st.file_uploader("Upload a large CSV file", type=["csv"])
 if uploaded_file:
     try:
-        # Read file in chunks for large CSVs
-        CHUNK_SIZE = 50000
-        st.info("Loading in chunks...")
+        # Load CSV into DataFrame
+        file_buffer = StringIO(uploaded_file.getvalue().decode("utf-8"))
+        df = pd.read_csv(file_buffer)
 
-        chunks = pd.read_csv(uploaded_file, chunksize=CHUNK_SIZE)
-        df = pd.concat(chunks)
+        st.success(f"Loaded {len(df):,} rows and {len(df.columns)} columns.")
 
-        st.success(f"Loaded {len(df):,} rows × {len(df.columns)} columns.")
+        # Display column info
+        with st.expander("ℹ️ View column info"):
+            st.write(df.dtypes)
 
-        # --- Search and Filter ---
-        with st.expander("🔍 Search / Filter Options"):
-            column = st.selectbox("Select column to filter", df.columns)
-            search_value = st.text_input("Enter value to search")
-            if search_value:
-                df = df[df[column].astype(str).str.contains(search_value, case=False, na=False)]
-                st.write(f"Filtered down to {len(df):,} rows")
+        # Optional filter
+        st.subheader("🔍 Filter Options")
 
-        # --- AgGrid for display ---
-        st.subheader("📋 Data Preview")
-        gb = GridOptionsBuilder.from_dataframe(df)
-        gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=20)
-        gb.configure_side_bar()
-        gb.configure_default_column(filterable=True, sortable=True, resizable=True)
-        grid_options = gb.build()
+        with st.expander("🧰 Add filters"):
+            filter_col = st.selectbox("Choose column to filter", df.columns)
+            unique_vals = df[filter_col].dropna().unique().tolist()
+            if df[filter_col].dtype == 'object' or df[filter_col].dtype.name == 'category':
+                selected_value = st.selectbox("Select value to filter", unique_vals)
+                filtered_df = df[df[filter_col] == selected_value]
+            elif pd.api.types.is_numeric_dtype(df[filter_col]):
+                min_val, max_val = float(df[filter_col].min()), float(df[filter_col].max())
+                range_val = st.slider("Select numeric range", min_val, max_val, (min_val, max_val))
+                filtered_df = df[df[filter_col].between(*range_val)]
+            else:
+                st.warning("Filtering not supported for this column type.")
+                filtered_df = df
+        st.markdown("### 🧾 Filtered Data Preview")
+        st.dataframe(filtered_df.head(1000), use_container_width=True)
 
-        AgGrid(df, gridOptions=grid_options, height=600, fit_columns_on_grid_load=True)
-
-        # --- Download filtered results ---
-        st.download_button(
-            label="📥 Download Filtered CSV",
-            data=df.to_csv(index=False).encode("utf-8"),
-            file_name="filtered_data.csv",
-            mime="text/csv",
-        )
+        # Download filtered data
+        csv = filtered_df.to_csv(index=False).encode("utf-8")
+        st.download_button("⬇️ Download Filtered CSV", csv, "filtered_data.csv", "text/csv")
 
     except Exception as e:
-        st.error(f"Error loading file: {e}")
+        st.error(f"Failed to load file: {e}")
 else:
-    st.warning("Please upload a CSV file to begin.")
+    st.info("Please upload a CSV file to begin.")
