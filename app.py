@@ -1,61 +1,53 @@
 import streamlit as st
 import pandas as pd
-import html
-import re
+from streamlit_aggrid import AgGrid, GridOptionsBuilder
 import io
 
-st.set_page_config(page_title="CSV HTML Cleaner", layout="wide")
+st.set_page_config(page_title="Large CSV Viewer", layout="wide")
 
-st.title("🧼 Clean HTML Entities in CSV")
-st.markdown("Upload a CSV file with HTML-encoded content (like `&lt;`, `&#039;`, etc.), and clean it for export.")
+st.title("📊 Large CSV File Viewer")
 
-# File uploader
-uploaded_file = st.file_uploader("📁 Upload CSV", type=["csv"])
-
-@st.cache_data(show_spinner=True)
-def load_csv(file):
-    return pd.read_csv(file)
-
-@st.cache_data(show_spinner=False)
-def decode_html(text):
-    if pd.isna(text):
-        return ""
-    return html.unescape(text)
-
-def remove_html_tags(text):
-    return re.sub(r'<[^>]*>', '', text)
+# --- Upload CSV File ---
+uploaded_file = st.file_uploader("Upload a CSV file", type=["csv"])
 
 if uploaded_file:
-    df = load_csv(uploaded_file)
-    st.success(f"✅ Loaded {len(df)} rows")
+    try:
+        # Read file in chunks for large CSVs
+        CHUNK_SIZE = 50000
+        st.info("Loading in chunks...")
 
-    st.subheader("Select the column to clean")
-    column_to_clean = st.selectbox("Column with HTML entities", df.columns)
+        chunks = pd.read_csv(uploaded_file, chunksize=CHUNK_SIZE)
+        df = pd.concat(chunks)
 
-    st.markdown("**Options:**")
-    decode = st.checkbox("🔓 Decode HTML Entities (e.g. &lt; to <)", value=True)
-    strip_tags = st.checkbox("🧽 Remove HTML Tags (e.g. <p>, <div>)", value=False)
+        st.success(f"Loaded {len(df):,} rows × {len(df.columns)} columns.")
 
-    if st.button("🧹 Clean Column"):
-        with st.spinner("Cleaning data..."):
-            cleaned_col = df[column_to_clean].astype(str)
+        # --- Search and Filter ---
+        with st.expander("🔍 Search / Filter Options"):
+            column = st.selectbox("Select column to filter", df.columns)
+            search_value = st.text_input("Enter value to search")
+            if search_value:
+                df = df[df[column].astype(str).str.contains(search_value, case=False, na=False)]
+                st.write(f"Filtered down to {len(df):,} rows")
 
-            if decode:
-                cleaned_col = cleaned_col.apply(decode_html)
-            if strip_tags:
-                cleaned_col = cleaned_col.apply(remove_html_tags)
+        # --- AgGrid for display ---
+        st.subheader("📋 Data Preview")
+        gb = GridOptionsBuilder.from_dataframe(df)
+        gb.configure_pagination(paginationAutoPageSize=False, paginationPageSize=20)
+        gb.configure_side_bar()
+        gb.configure_default_column(filterable=True, sortable=True, resizable=True)
+        grid_options = gb.build()
 
-            df[column_to_clean + "_cleaned"] = cleaned_col
-            st.success("🎉 Cleaning complete!")
+        AgGrid(df, gridOptions=grid_options, height=600, fit_columns_on_grid_load=True)
 
-            st.subheader("Preview of Cleaned Data")
-            st.dataframe(df[[column_to_clean, column_to_clean + "_cleaned"]].head(10))
+        # --- Download filtered results ---
+        st.download_button(
+            label="📥 Download Filtered CSV",
+            data=df.to_csv(index=False).encode("utf-8"),
+            file_name="filtered_data.csv",
+            mime="text/csv",
+        )
 
-            # Download cleaned CSV
-            cleaned_csv = df.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                label="📥 Download Cleaned CSV",
-                data=cleaned_csv,
-                file_name="cleaned_blog_data.csv",
-                mime="text/csv",
-            )
+    except Exception as e:
+        st.error(f"Error loading file: {e}")
+else:
+    st.warning("Please upload a CSV file to begin.")
